@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="./assets/readme/rtk-codex-plugin-banner.svg" alt="RTK Codex Plugin banner">
-</p>
-
 <h1 align="center">rtk-codex-plugin</h1>
 
 <p align="center">

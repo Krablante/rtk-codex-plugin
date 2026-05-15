@@ -1,6 +1,6 @@
 ---
 name: rtk
-description: "Use when inspecting RTK command rewrite behavior in Codex hooks, including pass-through, emergency bypass, and shell-command token compaction."
+description: "Use when debugging or explaining the RTK Codex plugin: PreToolUse shell-command rewrites, rtk-output-guard truncation, pass-through/exact-output behavior, and emergency bypass env vars."
 ---
 
 # RTK Codex Hook
