@@ -40,6 +40,9 @@ Stack note: [Codez](https://github.com/Krablante/codez) is the recommended
 public runtime layer for working plugin-hook compatibility and token-aware
 context behavior. RTK stays optional. A Telegram gateway layer, Teledex, is
 coming next and is not linked until it has a clean public release.
+When paired with a Pitlane code-navigation hook, enable RTK first and Pitlane
+after it; RTK deliberately passes Pitlane-owned source reads and recursive
+listings through unchanged so the Pitlane hook can handle them.
 
 ## Why People Use It
 
@@ -47,7 +50,8 @@ coming next and is not linked until it has a clean public release.
 - keep simple shell exploration compact without changing test or machine output
 - preserve exact-output commands such as `rg --files`, `git status --short`,
   JSON modes, counts, lists, direct `rg`/`grep` searches, build/test commands,
-  Docker commands, and interactive commands
+  Docker commands, interactive commands, and Pitlane-owned code-navigation
+  reads when a Pitlane hook is installed later in the hook chain
 - install as a small plugin instead of changing every shell command by hand
 
 ## Mental Model
@@ -65,6 +69,7 @@ Architecture at a glance:
 Codex shell tool call
   -> PreToolUse hook
      -> risky JSONL/log/prompt inspection? run through rtk-output-guard
+     -> Pitlane-owned source read/listing? pass through for the later Pitlane hook
      -> otherwise eligible simple command? ask rtk rewrite
      -> exact-output/build/test/Docker/interactive command? pass through unchanged
 ```

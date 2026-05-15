@@ -277,6 +277,25 @@ class RtkCodexHookTest(unittest.TestCase):
                 )
                 self.assert_no_output(result)
 
+    def test_passes_through_pitlane_owned_navigation_shapes(self) -> None:
+        for command in [
+            "cat src/app.py",
+            "cat hooks/rtk-codex-hook",
+            "head -n 20 src/app.py",
+            "head -n20 hooks/rtk-codex-hook",
+            "sed -n '1,20p' src/app.py",
+            "sed -n '1,20p' hooks/rtk-codex-hook",
+            "ls -R src",
+            "ls -laR hooks",
+            "tree src",
+        ]:
+            with self.subTest(command=command):
+                result = self.run_hook(
+                    command,
+                    rtk_body="#!/usr/bin/env sh\nshift\nprintf 'rtk %s\\n' \"$*\"\n",
+                )
+                self.assert_no_output(result)
+
     def test_passes_through_env_prefixed_exact_output_commands(self) -> None:
         for command in [
             "LC_ALL=C rg --files",

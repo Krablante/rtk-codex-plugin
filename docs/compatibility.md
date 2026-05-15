@@ -31,7 +31,17 @@ The hook avoids rewriting commands where exact output is expected:
 - machine-readable modes such as JSON, porcelain, counts, and file lists
 - interactive commands
 - binary-ish output commands
+- Pitlane-owned code-navigation reads and recursive listings, so a later
+  Pitlane hook can compact source reads instead of RTK rewriting them first
 - shell-control forms that are not recognized risky inspection pipelines
 
 Recognized JSONL, log, and prompt-input inspection shapes are guarded before
 execution so a single long line cannot dominate the context window.
+
+## Pitlane Coexistence
+
+If you use a Pitlane Codex hook in the same runtime, configure RTK before
+Pitlane. RTK keeps its exact-output and risky-output guard behavior, then passes
+safe source reads such as `cat src/app.py`, `head -n 20 src/app.py`,
+`sed -n '1,20p' src/app.py`, `ls -R src`, and `tree src` through unchanged so
+the later Pitlane hook can decide whether to rewrite them.
