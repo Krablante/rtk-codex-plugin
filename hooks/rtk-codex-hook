@@ -1,0 +1,586 @@
+#!/usr/bin/env python3
+"""Codex PreToolUse hook that rewrites eligible shell commands through RTK."""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+BYPASS_ENV = {
+    "RTK_CODEX_HOOK_DISABLE",
+    "RTK_CODEX_BYPASS",
+    "RTK_DISABLE",
+    "RTK_DISABLED",
+}
+
+TEST_COMMANDS = {
+    "cargo",
+    "go",
+    "jest",
+    "make",
+    "npm",
+    "pnpm",
+    "pytest",
+    "rake",
+    "rspec",
+    "vitest",
+    "yarn",
+}
+SHELL_RUNNERS = {"bash", "dash", "fish", "sh", "zsh"}
+INTERACTIVE_COMMANDS = {
+    "htop",
+    "less",
+    "more",
+    "nano",
+    "nvim",
+    "screen",
+    "ssh",
+    "tmux",
+    "top",
+    "vi",
+    "vim",
+    "watch",
+}
+BINARY_OUTPUT_COMMANDS = {"base64", "file", "hexdump", "xxd"}
+RG_EXACT_OUTPUT_FLAGS = {
+    "--count",
+    "--count-matches",
+    "--files",
+    "--files-with-matches",
+    "--files-without-match",
+    "--json",
+    "--null",
+    "--stats",
+    "--vimgrep",
+    "-0",
+    "-c",
+    "-l",
+    "-L",
+}
+GREP_EXACT_OUTPUT_FLAGS = {
+    "--count",
+    "--files-with-matches",
+    "--max-count",
+    "--quiet",
+    "-c",
+    "-l",
+    "-m",
+    "-q",
+}
+MACHINE_FLAGS = {
+    "--json",
+    "--format=json",
+    "--porcelain",
+    "--porcelain=v1",
+    "--porcelain=v2",
+    "--machine-readable",
+    "-json",
+}
+MACHINE_VALUE_FLAGS = {"--format", "--output", "-o"}
+MACHINE_VALUES = {"json", "jsonpath", "machine-readable", "porcelain", "yaml", "yml"}
+GIT_STATUS_EXACT_FLAGS = {"--branch", "--porcelain", "--porcelain=v1", "--porcelain=v2", "--short", "-s", "-z"}
+GIT_STATUS_EXACT_SHORT_FLAGS = {"b", "s", "z"}
+CONTROL_MARKERS = ("|", ">", "<", "$(", "`", "&&", "||", ";", "\n", "\r", "&")
+SHELL_GROUPING_PATTERN = re.compile(r"(^|\s)\([^)]*\)($|\s)")
+GUARD_DISALLOWED_MARKERS = (">", "<", "$(", "`", "&&", "||", ";", "\n", "\r", "&")
+RG_EXACT_OUTPUT_SHORT_FLAGS = {"0", "c", "l", "L"}
+GREP_EXACT_OUTPUT_SHORT_FLAGS = {"c", "l", "m", "q"}
+RTK_REWRITE_SUCCESS_CODES = {0, 3}
+MAX_REWRITE_COMMAND_BYTES = 16 * 1024
+RISKY_LONG_LINE_EXTENSIONS = {
+    ".jsonl",
+    ".ndjson",
+    ".json",
+    ".log",
+    ".log.*",
+}
+PIPELINE_TEXT_PRODUCERS = {"awk", "cat", "find", "git", "grep", "jq", "rg", "sed"}
+LINE_LIMITING_COMMANDS = {"head", "tail"}
+LONG_LINE_FILTER_COMMANDS = {"grep", "rg"}
+
+
+def main() -> int:
+    if any(os.environ.get(name) for name in BYPASS_ENV):
+        return 0
+
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("hook_event_name") != "PreToolUse" or payload.get("tool_name") != "Bash":
+        return 0
+
+    command = command_from_payload(payload)
+    if not command:
+        return 0
+
+    guarded = output_guard_rewrite(command)
+    if guarded:
+        emit_rewrite(guarded)
+        return 0
+
+    if should_pass_through(command):
+        return 0
+
+    rtk = shutil.which("rtk")
+    if not rtk:
+        return 0
+
+    rewritten = rewrite_command(rtk, command)
+    if not rewritten or rewritten == command or not is_safe_rewrite(rewritten):
+        return 0
+
+    emit_rewrite(rewritten)
+    return 0
+
+
+def emit_rewrite(command: str) -> None:
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": {"command": command},
+                }
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
+def command_from_payload(payload: dict[str, Any]) -> str:
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return ""
+    command = tool_input.get("command")
+    return command if isinstance(command, str) else ""
+
+
+def should_pass_through(command: str) -> bool:
+    stripped = command.strip()
+    if not stripped:
+        return True
+    if has_shell_control(stripped):
+        return True
+
+    try:
+        tokens = shlex.split(stripped, posix=True)
+    except ValueError:
+        return True
+    if not tokens:
+        return True
+
+    head = tokens[0]
+    if head == "rtk":
+        return True
+    if has_bypass_env_prefix(tokens):
+        return True
+    inner_tokens = env_prefixed_command_tokens(tokens)
+    if inner_tokens != tokens and tokens_should_pass_through(inner_tokens):
+        return True
+
+    return tokens_should_pass_through(tokens)
+
+
+def tokens_should_pass_through(tokens: list[str]) -> bool:
+    head = tokens[0]
+    if head == "rtk":
+        return True
+    if is_shell_runner_command(tokens):
+        return True
+    if is_timeout_command(tokens):
+        return True
+    if is_interactive_command(tokens):
+        return True
+    if is_find_command(tokens):
+        return True
+    if is_binary_output_command(tokens):
+        return True
+    if is_jq_command(tokens):
+        return True
+    if is_git_exact_output(tokens):
+        return True
+    if is_grep_exact_output(tokens):
+        return True
+    if is_rg_exact_output(tokens):
+        return True
+    if has_machine_output_request(tokens):
+        return True
+    if is_test_command(tokens):
+        return True
+
+    return False
+
+
+def has_shell_control(command: str) -> bool:
+    return any(marker in command for marker in CONTROL_MARKERS) or bool(
+        SHELL_GROUPING_PATTERN.search(command)
+    )
+
+
+def output_guard_rewrite(command: str) -> str:
+    if not should_guard_output(command):
+        return ""
+
+    guard = Path(__file__).with_name("rtk-output-guard")
+    if not guard.exists():
+        return ""
+
+    encoded = base64.b64encode(command.encode("utf8")).decode("ascii")
+    python = shlex.quote(sys.executable or "python3")
+    return f"{python} {shlex.quote(str(guard))} --b64 {encoded}"
+
+
+def should_guard_output(command: str) -> bool:
+    stripped = command.strip()
+    if not stripped or any(marker in stripped for marker in GUARD_DISALLOWED_MARKERS):
+        return False
+
+    segments = split_unquoted_pipes(stripped)
+    if not segments:
+        return False
+
+    if len(segments) > 1:
+        return is_line_limited_pipeline(segments)
+
+    try:
+        tokens = shlex.split(segments[0], posix=True)
+    except ValueError:
+        return False
+    return is_direct_risky_limiter(tokens)
+
+
+def split_unquoted_pipes(command: str) -> list[str] | None:
+    segments: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+
+    for index, char in enumerate(command):
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+
+        if char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+            continue
+
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+
+        if char in {"'", '"'}:
+            current.append(char)
+            quote = char
+            continue
+
+        if char == "|":
+            if index + 1 < len(command) and command[index + 1] == "|":
+                return None
+            segment = "".join(current).strip()
+            if not segment:
+                return None
+            segments.append(segment)
+            current = []
+            continue
+
+        current.append(char)
+
+    if quote:
+        return None
+
+    segment = "".join(current).strip()
+    if not segment:
+        return None
+    segments.append(segment)
+    return segments
+
+
+def is_line_limited_pipeline(segments: list[str]) -> bool:
+    parsed = parse_pipeline_segments(segments)
+    if not parsed:
+        return False
+
+    if is_known_long_line_producer(parsed[0]):
+        return any(is_line_limiter(tokens) or is_long_line_filter(tokens) for tokens in parsed[1:])
+
+    has_limiter = any(is_line_limiter(tokens) for tokens in parsed[1:])
+    if not has_limiter:
+        return False
+
+    first_head = os.path.basename(parsed[0][0])
+    return first_head in PIPELINE_TEXT_PRODUCERS or any(
+        token_has_risky_long_line_extension(token) for tokens in parsed for token in tokens
+    )
+
+
+def parse_pipeline_segments(segments: list[str]) -> list[list[str]]:
+    parsed: list[list[str]] = []
+    for segment in segments:
+        try:
+            tokens = shlex.split(segment, posix=True)
+        except ValueError:
+            return []
+        if not tokens:
+            return []
+        parsed.append(tokens)
+    return parsed
+
+
+def is_line_limiter(tokens: list[str]) -> bool:
+    head = os.path.basename(tokens[0])
+    if head in LINE_LIMITING_COMMANDS:
+        return True
+    if head == "sed" and "-n" in tokens[1:]:
+        return True
+    return False
+
+
+def is_long_line_filter(tokens: list[str]) -> bool:
+    return bool(tokens and os.path.basename(tokens[0]) in LONG_LINE_FILTER_COMMANDS)
+
+
+def is_known_long_line_producer(tokens: list[str]) -> bool:
+    return len(tokens) >= 3 and tokens[:3] == ["codex", "debug", "prompt-input"]
+
+
+def is_direct_risky_limiter(tokens: list[str]) -> bool:
+    if is_known_long_line_producer(tokens):
+        return True
+    if not tokens or not is_line_limiter(tokens):
+        return False
+    return any(token_has_risky_long_line_extension(token) for token in tokens[1:])
+
+
+def token_has_risky_long_line_extension(token: str) -> bool:
+    lowered = token.lower()
+    return any(
+        lowered.endswith(extension)
+        or (extension.endswith(".*") and f"{extension[:-2]}." in lowered)
+        for extension in RISKY_LONG_LINE_EXTENSIONS
+    )
+
+
+def is_machine_flag(token: str) -> bool:
+    if token in MACHINE_FLAGS:
+        return True
+    if re.match(r"^--[^=]+=(json|yaml|yml)$", token):
+        return True
+    return bool(re.match(r"^-o=?(json|yaml|yml|jsonpath)(=.*)?$", token))
+
+
+def has_machine_output_request(tokens: list[str]) -> bool:
+    if any(is_machine_flag(token) for token in tokens):
+        return True
+
+    for index, token in enumerate(tokens[:-1]):
+        if token in MACHINE_VALUE_FLAGS:
+            value = tokens[index + 1].lower()
+            if value in MACHINE_VALUES or value.startswith("jsonpath="):
+                return True
+
+    return False
+
+
+def is_find_command(tokens: list[str]) -> bool:
+    return os.path.basename(tokens[0]) == "find"
+
+
+def is_binary_output_command(tokens: list[str]) -> bool:
+    return os.path.basename(tokens[0]) in BINARY_OUTPUT_COMMANDS
+
+
+def is_jq_command(tokens: list[str]) -> bool:
+    return os.path.basename(tokens[0]) == "jq"
+
+
+def is_git_exact_output(tokens: list[str]) -> bool:
+    if os.path.basename(tokens[0]) != "git":
+        return False
+    if len(tokens) < 2:
+        return False
+    subcommand = tokens[1]
+    exact_flags = {
+        "--name-only",
+        "--name-status",
+        "--numstat",
+        "--raw",
+        "--shortstat",
+        "-z",
+    }
+    if any(token in exact_flags for token in tokens[2:]):
+        return True
+    if subcommand == "status":
+        return any(
+            token in GIT_STATUS_EXACT_FLAGS
+            or has_short_flag(token, GIT_STATUS_EXACT_SHORT_FLAGS)
+            for token in tokens[2:]
+        )
+    if subcommand == "ls-files":
+        return any(token in {"-z", "--stage"} for token in tokens[2:])
+    return False
+
+
+def has_bypass_env_prefix(tokens: list[str]) -> bool:
+    if tokens[0] == "env":
+        return any(is_bypass_assignment(token) for token in tokens[1:] if "=" in token)
+    return is_bypass_assignment(tokens[0])
+
+
+def is_bypass_assignment(token: str) -> bool:
+    name, separator, value = token.partition("=")
+    return bool(separator and value and name in BYPASS_ENV)
+
+
+def env_prefixed_command_tokens(tokens: list[str]) -> list[str]:
+    if is_env_assignment(tokens[0]):
+        index = 0
+        while index < len(tokens) and is_env_assignment(tokens[index]):
+            index += 1
+        return tokens[index:] if index < len(tokens) else tokens
+
+    if tokens[0] != "env":
+        return tokens
+
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-i", "--ignore-environment"}:
+            index += 1
+            continue
+        if token == "--":
+            index += 1
+            continue
+        if token in {"-u", "--unset"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            return tokens
+        if is_env_assignment(token):
+            index += 1
+            continue
+        break
+
+    return tokens[index:] if index < len(tokens) else tokens
+
+
+def is_env_assignment(token: str) -> bool:
+    name, separator, _value = token.partition("=")
+    return bool(separator and name)
+
+
+def is_shell_runner_command(tokens: list[str]) -> bool:
+    if os.path.basename(tokens[0]) not in SHELL_RUNNERS:
+        return False
+    return any(token in {"-c", "-lc"} for token in tokens[1:])
+
+
+def is_timeout_command(tokens: list[str]) -> bool:
+    return os.path.basename(tokens[0]) == "timeout"
+
+
+def is_interactive_command(tokens: list[str]) -> bool:
+    head = os.path.basename(tokens[0])
+    if head in INTERACTIVE_COMMANDS:
+        return True
+    if head in {"docker", "kubectl"} and any(
+        token in {"-i", "-t", "-it", "-ti"} for token in tokens[1:]
+    ):
+        return True
+    return False
+
+
+def is_grep_exact_output(tokens: list[str]) -> bool:
+    if os.path.basename(tokens[0]) != "grep":
+        return False
+    return any(
+        token in GREP_EXACT_OUTPUT_FLAGS
+        or token.startswith("--max-count=")
+        or has_short_flag(token, GREP_EXACT_OUTPUT_SHORT_FLAGS)
+        for token in tokens[1:]
+    )
+
+
+def is_rg_exact_output(tokens: list[str]) -> bool:
+    if os.path.basename(tokens[0]) != "rg":
+        return False
+    return any(
+        token in RG_EXACT_OUTPUT_FLAGS
+        or has_short_flag(token, RG_EXACT_OUTPUT_SHORT_FLAGS)
+        for token in tokens[1:]
+    )
+
+
+def has_short_flag(token: str, protected_flags: set[str]) -> bool:
+    return (
+        token.startswith("-")
+        and not token.startswith("--")
+        and any(flag in protected_flags for flag in token[1:])
+    )
+
+
+def is_test_command(tokens: list[str]) -> bool:
+    head = tokens[0]
+    tail = tokens[1:]
+    if os.path.basename(head) in {"python", "python3"} and len(tail) >= 2:
+        return tail[0] == "-m" and tail[1] in {"pytest", "unittest"}
+    if head not in TEST_COMMANDS:
+        return False
+    if head in {"pytest", "jest", "vitest", "rspec"}:
+        return True
+    if head == "cargo":
+        return bool(tail and tail[0] in {"test", "nextest"})
+    if head == "go":
+        return bool(tail and tail[0] == "test")
+    if head in {"npm", "pnpm", "yarn"}:
+        return any(token in {"test", "tests", "check", "ci"} for token in tail)
+    if head == "make":
+        return any(token in {"test", "tests", "check", "ci"} for token in tail)
+    if head == "rake":
+        return any("test" in token for token in tail)
+    return False
+
+
+def rewrite_command(rtk: str, command: str) -> str:
+    try:
+        completed = subprocess.run(
+            [rtk, "rewrite", command],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=4,
+        )
+    except (OSError, UnicodeDecodeError, subprocess.SubprocessError):
+        return ""
+
+    if completed.returncode not in RTK_REWRITE_SUCCESS_CODES:
+        return ""
+
+    return completed.stdout.strip()
+
+
+def is_safe_rewrite(command: str) -> bool:
+    if len(command.encode("utf8")) > MAX_REWRITE_COMMAND_BYTES:
+        return False
+    if any(ord(char) < 32 for char in command):
+        return False
+    return not has_shell_control(command)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

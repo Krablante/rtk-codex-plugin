@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Run an inspection shell command with bounded line and total output size."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import subprocess
+import sys
+
+
+DEFAULT_MAX_LINE_BYTES = 4096
+DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
+MAX_SUPPRESSED_LINE_BYTES = 1024 * 1024
+READ_SIZE = 8192
+
+
+class OutputState:
+    def __init__(self, max_output_bytes: int) -> None:
+        self.max_output_bytes = max_output_bytes
+        self.output_bytes = 0
+        self.total_truncated = False
+
+    def emit(self, data: bytes) -> bool:
+        if not data or self.total_truncated:
+            return not self.total_truncated
+
+        remaining = self.max_output_bytes - self.output_bytes
+        if remaining <= 0:
+            self.total_truncated = True
+            return False
+
+        if len(data) > remaining:
+            sys.stdout.buffer.write(data[:remaining])
+            self.output_bytes += remaining
+            self.total_truncated = True
+            return False
+
+        sys.stdout.buffer.write(data)
+        self.output_bytes += len(data)
+        return True
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--b64", required=True, help="base64-encoded shell command")
+    parser.add_argument("--max-line-bytes", type=int, default=DEFAULT_MAX_LINE_BYTES)
+    parser.add_argument("--max-output-bytes", type=int, default=DEFAULT_MAX_OUTPUT_BYTES)
+    return parser.parse_args()
+
+
+def decode_command(encoded: str) -> str:
+    return base64.b64decode(encoded.encode("ascii"), validate=True).decode("utf8")
+
+
+def stream_bounded(process: subprocess.Popen[bytes], max_line_bytes: int, max_output_bytes: int) -> bool:
+    assert process.stdout is not None
+
+    state = OutputState(max_output_bytes)
+    line_bytes = 0
+    line_truncated = False
+    killed = False
+
+    while True:
+        chunk = process.stdout.read(READ_SIZE)
+        if not chunk:
+            break
+
+        for byte in chunk:
+            if byte == 10:
+                if not line_truncated and not state.emit(b"\n"):
+                    killed = True
+                    break
+                line_bytes = 0
+                line_truncated = False
+                continue
+
+            line_bytes += 1
+            if line_bytes <= max_line_bytes and not line_truncated:
+                if not state.emit(bytes((byte,))):
+                    killed = True
+                    break
+                continue
+
+            if not line_truncated:
+                if not state.emit(b"... [rtk-output-guard: line truncated]\n"):
+                    killed = True
+                    break
+                line_truncated = True
+
+            if line_bytes > max_line_bytes + MAX_SUPPRESSED_LINE_BYTES:
+                killed = True
+                break
+
+        if killed or state.total_truncated:
+            break
+
+    if killed or state.total_truncated:
+        terminate_process(process)
+        if state.total_truncated:
+            sys.stdout.buffer.write(
+                f"\n[rtk-output-guard: output truncated after {max_output_bytes} bytes]\n".encode(
+                    "ascii"
+                )
+            )
+        else:
+            sys.stdout.buffer.write(
+                b"\n[rtk-output-guard: command stopped after an oversized line]\n"
+            )
+        return True
+
+    return False
+
+
+def terminate_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1)
+
+
+def main() -> int:
+    args = parse_args()
+    max_line_bytes = max(128, args.max_line_bytes)
+    max_output_bytes = max(max_line_bytes, args.max_output_bytes)
+
+    try:
+        command = decode_command(args.b64)
+    except Exception as exc:
+        print(f"rtk-output-guard: invalid command: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError as exc:
+        print(f"rtk-output-guard: failed to start command: {exc}", file=sys.stderr)
+        return 126
+
+    truncated = stream_bounded(process, max_line_bytes, max_output_bytes)
+    if truncated:
+        return 0
+
+    return process.wait()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
