@@ -46,7 +46,8 @@ coming next and is not linked until it has a clean public release.
 - avoid huge JSONL, log, and prompt-capture lines flooding the model context
 - keep simple shell exploration compact without changing test or machine output
 - preserve exact-output commands such as `rg --files`, `git status --short`,
-  JSON modes, counts, lists, test commands, and interactive commands
+  JSON modes, counts, lists, direct `rg`/`grep` searches, build/test commands,
+  Docker commands, and interactive commands
 - install as a small plugin instead of changing every shell command by hand
 
 ## Mental Model
@@ -65,7 +66,7 @@ Codex shell tool call
   -> PreToolUse hook
      -> risky JSONL/log/prompt inspection? run through rtk-output-guard
      -> otherwise eligible simple command? ask rtk rewrite
-     -> exact-output/test/interactive command? pass through unchanged
+     -> exact-output/build/test/Docker/interactive command? pass through unchanged
 ```
 
 ## Highlights

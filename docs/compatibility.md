@@ -25,6 +25,9 @@ not require `rtk`.
 The hook avoids rewriting commands where exact output is expected:
 
 - tests and package-manager check commands
+- build commands
+- direct `rg`/`grep` searches, including regex-like patterns
+- Docker commands
 - machine-readable modes such as JSON, porcelain, counts, and file lists
 - interactive commands
 - binary-ish output commands

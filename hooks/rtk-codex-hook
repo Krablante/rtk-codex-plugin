@@ -35,6 +35,15 @@ TEST_COMMANDS = {
     "vitest",
     "yarn",
 }
+BUILD_COMMANDS = {
+    "cargo",
+    "go",
+    "make",
+    "npm",
+    "pnpm",
+    "yarn",
+}
+DOCKER_COMMANDS = {"docker", "docker-compose"}
 SHELL_RUNNERS = {"bash", "dash", "fish", "sh", "zsh"}
 INTERACTIVE_COMMANDS = {
     "htop",
@@ -214,9 +223,15 @@ def tokens_should_pass_through(tokens: list[str]) -> bool:
         return True
     if is_rg_exact_output(tokens):
         return True
+    if is_rg_or_grep_command(tokens):
+        return True
     if has_machine_output_request(tokens):
         return True
+    if is_build_command(tokens):
+        return True
     if is_test_command(tokens):
+        return True
+    if is_docker_command(tokens):
         return True
 
     return False
@@ -408,6 +423,13 @@ def is_jq_command(tokens: list[str]) -> bool:
     return os.path.basename(tokens[0]) == "jq"
 
 
+def is_docker_command(tokens: list[str]) -> bool:
+    head = os.path.basename(tokens[0])
+    if head in DOCKER_COMMANDS:
+        return True
+    return head == "docker" and len(tokens) > 1 and tokens[1] == "compose"
+
+
 def is_git_exact_output(tokens: list[str]) -> bool:
     if os.path.basename(tokens[0]) != "git":
         return False
@@ -525,12 +547,30 @@ def is_rg_exact_output(tokens: list[str]) -> bool:
     )
 
 
+def is_rg_or_grep_command(tokens: list[str]) -> bool:
+    return bool(tokens and os.path.basename(tokens[0]) in {"rg", "grep"})
+
+
 def has_short_flag(token: str, protected_flags: set[str]) -> bool:
     return (
         token.startswith("-")
         and not token.startswith("--")
         and any(flag in protected_flags for flag in token[1:])
     )
+
+
+def is_build_command(tokens: list[str]) -> bool:
+    head = tokens[0]
+    tail = tokens[1:]
+    if head not in BUILD_COMMANDS:
+        return False
+    if head in {"cargo", "go"}:
+        return bool(tail and tail[0] == "build")
+    if head == "make":
+        return any(token in {"build", "compile"} for token in tail)
+    if head in {"npm", "pnpm", "yarn"}:
+        return any(token == "build" for token in tail)
+    return False
 
 
 def is_test_command(tokens: list[str]) -> bool:

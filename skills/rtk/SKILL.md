@@ -24,12 +24,13 @@ through host-wide PATH wrappers.
 The hook deliberately does not rewrite:
 
 - `rg --files`
-- native `find`, `grep` count/list/quiet modes, and `rg`
-  file-list/JSON/count/list/stats/vimgrep modes
+- native `find`, direct `rg`/`grep` searches, `grep` count/list/quiet modes,
+  and `rg` file-list/JSON/count/list/stats/vimgrep modes
 - commands with pipes, redirects, command substitution, shell separators, or
   other multi-command shell control, except line-limited inspection pipelines
   that are safely bounded by `rtk-output-guard`
 - JSON, porcelain, and machine-readable output modes
+- build commands and Docker commands
 - test commands such as `cargo test`, `go test`, `pytest`, `jest`, `vitest`,
   `rspec`, and package-manager test/check scripts
 
