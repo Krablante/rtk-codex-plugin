@@ -9,9 +9,13 @@ The plugin is intended for Codex-compatible runtimes that support:
 
 Known integration layers:
 
-- Codez-compatible runtimes can execute the hook directly.
+- [Codez](https://github.com/Krablante/codez) is the recommended public runtime
+  layer when you want plugin hooks plus token-aware context behavior.
+- Other Codez/Codex-compatible runtimes can execute the hook directly if they
+  support plugin-loaded `PreToolUse` shell hooks.
 - Telegram or remote-worker gateways can sync the plugin to worker machines,
-  but no gateway is required for local usage.
+  but no gateway is required for local usage. Teledex is the planned Telegram
+  gateway layer and is intentionally not linked until it has a public release.
 
 `rtk` command rewrite requires the `rtk` binary in `PATH`. Output guarding does
 not require `rtk`.

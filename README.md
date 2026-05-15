@@ -36,6 +36,11 @@ runtimes. It has two jobs:
 The guard is useful even when `rtk` is not installed. Rewrite mode is optional
 and activates only when the `rtk` binary is available in `PATH`.
 
+Stack note: [Codez](https://github.com/Krablante/codez) is the recommended
+public runtime layer for working plugin-hook compatibility and token-aware
+context behavior. RTK stays optional. A Telegram gateway layer, Teledex, is
+coming next and is not linked until it has a clean public release.
+
 ## Why People Use It
 
 - avoid huge JSONL, log, and prompt-capture lines flooding the model context
@@ -69,7 +74,7 @@ Codex shell tool call
 - works without `rtk` for output guarding
 - skips rewrite when exact stdout matters
 - uses plain Python scripts and a small plugin manifest
-- designed to work standalone and to fit a future Codez + Teledex stack
+- designed to work standalone and to fit the Codez + RTK + future Teledex stack
 
 ## Quick Start
 
