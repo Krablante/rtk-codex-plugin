@@ -4,7 +4,8 @@ The plugin is intended for Codex-compatible runtimes that support:
 
 - plugin manifests via `.codex-plugin/plugin.json`;
 - hook declarations via `hooks/hooks.json`;
-- `PreToolUse` hooks for shell/Bash tool calls;
+- `PreToolUse` and `PostToolUse` hooks for shell/Bash or compatible
+  `exec_command` tool calls;
 - `${PLUGIN_ROOT}` expansion in hook commands.
 
 Known integration layers:
@@ -35,7 +36,13 @@ The hook avoids rewriting commands where exact output is expected:
 - shell-control forms that are not recognized risky inspection pipelines
 
 Recognized JSONL, log, and prompt-input inspection shapes are guarded before
-execution so a single long line cannot dominate the context window.
+execution so a single long line cannot dominate the context window. Larger
+model-visible output is compacted after execution with a local artifact path
+and hash, including pass-through command families such as standalone
+`jq`/JSON-style commands, Docker/SSH output, build/test output, Git path
+streams, `write_stdin` stream output, and parallel-wrapper output when the
+runtime exposes them through `PostToolUse`. Set `RTK_CODEX_BYPASS=1` when raw
+model-visible output must be preserved above the caps.
 
 ## Dependency Boundary
 

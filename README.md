@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A small Codex-compatible <code>PreToolUse</code> plugin for shell command rewrite and bounded long-line output.
+  A small Codex-compatible shell plugin for command rewrite, bounded long-line output, and artifact-backed output compaction.
 </p>
 
 <p align="center">
@@ -30,8 +30,12 @@
 `rtk-codex-plugin` adds a shell-focused `PreToolUse` hook for Codex-compatible
 runtimes. It has two jobs:
 
-- route eligible Bash commands through `rtk rewrite` for more compact output;
-- wrap risky long-line inspections with a bounded output guard.
+- route eligible Bash/`exec_command` calls through `rtk rewrite` for more
+  compact output;
+- wrap risky long-line inspections with a bounded output guard;
+- compact medium/large model-visible tool output after execution while
+  preserving the full raw output, including `write_stdin` streams, in local
+  artifacts.
 
 The guard is useful even when `rtk` is not installed. Rewrite mode is optional
 and activates only when the `rtk` binary is available in `PATH`.
@@ -51,10 +55,12 @@ layer explicitly opts into it.
 ## Why People Use It
 
 - avoid huge JSONL, log, and prompt-capture lines flooding the model context
-- keep simple shell exploration compact without changing test or machine output
-- preserve exact-output commands such as `rg --files`, `git status --short`,
-  JSON modes, counts, lists, direct `rg`/`grep` searches, build/test commands,
-  Docker commands, and interactive commands
+- keep simple shell exploration compact without changing test or machine
+  command semantics
+- preserve no-rewrite command semantics for `rg --files`, `git status --short`,
+  `jq`/JSON modes, counts, lists, direct `rg`/`grep` searches, build/test
+  commands, Docker commands, and interactive commands while still compacting
+  oversized model-visible output
 - install as a small plugin instead of changing every shell command by hand
 
 ## Mental Model
@@ -64,6 +70,7 @@ layer explicitly opts into it.
 | Codex-compatible runtime | executes `PreToolUse` hooks before shell calls |
 | `rtk-codex-hook` | decides whether a command should be guarded, rewritten, or left alone |
 | `rtk-output-guard` | caps per-line and total stdout for risky inspections |
+| `rtk-output-post-hook` | compacts large model-visible shell output with artifact refs |
 | optional `rtk` binary | rewrites eligible commands into a compact shell form |
 
 Architecture at a glance:
@@ -73,12 +80,16 @@ Codex shell tool call
   -> PreToolUse hook
      -> risky JSONL/log/prompt inspection? run through rtk-output-guard
      -> otherwise eligible simple command? ask rtk rewrite
-     -> exact-output/build/test/Docker/interactive command? pass through unchanged
+     -> no-rewrite/build/test/Docker/interactive command? pass through unchanged
+  -> PostToolUse hook
+     -> medium/large model-visible output? summary + full local artifact
 ```
 
 ## Highlights
 
 - bounds known long-line inspection shapes before execution
+- bounds medium/large model-visible output after execution, including large
+  pass-through command output unless explicitly bypassed
 - works without `rtk` for output guarding
 - skips rewrite when exact stdout matters
 - uses plain Python scripts and a small plugin manifest
