@@ -36,13 +36,17 @@ runtimes. It has two jobs:
 The guard is useful even when `rtk` is not installed. Rewrite mode is optional
 and activates only when the `rtk` binary is available in `PATH`.
 
-Stack note: [Codez](https://github.com/Krablante/codez) is the recommended
-public runtime layer for working plugin-hook compatibility and token-aware
-context behavior. RTK stays optional. A Telegram gateway layer, Teledex, is
-coming next and is not linked until it has a clean public release.
-When paired with a Pitlane code-navigation hook, enable RTK first and Pitlane
-after it; RTK deliberately passes Pitlane-owned source reads and recursive
-listings through unchanged so the Pitlane hook can handle them.
+## Part of the Codez stack
+
+The Codez stack is modular. Each layer can be used on its own unless a higher
+layer explicitly opts into it.
+
+| Layer | Public surface | Responsibility | Dependency |
+| --- | --- | --- | --- |
+| [Codez](https://github.com/Krablante/codez) | Codex-compatible runtime | App Server v2, goal RPC, long-session hardening, prompt pruning, and plugin hooks | Does not require Teledex |
+| [RTK Codex Plugin](https://github.com/Krablante/rtk-codex-plugin) | Optional Codex plugin | Shell/token safety through `rtk rewrite` and bounded output guarding | Requires a Codex-compatible plugin-hook runtime; does not require Teledex |
+| [Pitlane Codex Plugin](https://github.com/Krablante/pitlane-codex-plugin) | Optional Codex plugin | Code-navigation/token-saving rewrites through a host-local `pitlane` CLI | Requires a Codex-compatible plugin-hook runtime and local `pitlane`; does not require Teledex |
+| Teledex (planned public repo: `Krablante/teledex`) | Telegram gateway/session layer | Topics, queues, live steer, `/goal` UX, and multi-host delivery/recovery | Basic mode can drive upstream Codex; full mode requires a Codez-compatible runtime with App Server v2 and plugin-hook support |
 
 ## Why People Use It
 
@@ -50,8 +54,7 @@ listings through unchanged so the Pitlane hook can handle them.
 - keep simple shell exploration compact without changing test or machine output
 - preserve exact-output commands such as `rg --files`, `git status --short`,
   JSON modes, counts, lists, direct `rg`/`grep` searches, build/test commands,
-  Docker commands, interactive commands, and Pitlane-owned code-navigation
-  reads when a Pitlane hook is installed later in the hook chain
+  Docker commands, and interactive commands
 - install as a small plugin instead of changing every shell command by hand
 
 ## Mental Model
@@ -69,7 +72,6 @@ Architecture at a glance:
 Codex shell tool call
   -> PreToolUse hook
      -> risky JSONL/log/prompt inspection? run through rtk-output-guard
-     -> Pitlane-owned source read/listing? pass through for the later Pitlane hook
      -> otherwise eligible simple command? ask rtk rewrite
      -> exact-output/build/test/Docker/interactive command? pass through unchanged
 ```
@@ -80,7 +82,7 @@ Codex shell tool call
 - works without `rtk` for output guarding
 - skips rewrite when exact stdout matters
 - uses plain Python scripts and a small plugin manifest
-- designed to work standalone and to fit the Codez + RTK + future Teledex stack
+- designed to work standalone and to fit the modular Codez stack
 
 ## Quick Start
 

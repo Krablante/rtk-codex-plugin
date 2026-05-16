@@ -26,9 +26,7 @@ enabled = true
 If your runtime assigns a different marketplace or local plugin key, enable the
 key that matches its cache layout.
 
-When installing a Pitlane Codex hook too, keep RTK first and Pitlane after it in
-the effective hook order. RTK will pass Pitlane-owned source reads and recursive
-listings through unchanged so the later Pitlane hook can compact them.
-
 `rtk` is optional. If it is missing, rewrite mode is skipped and bounded-output
 guarding still works for recognized risky command shapes.
+
+No Teledex or gateway install is required for local plugin usage.
