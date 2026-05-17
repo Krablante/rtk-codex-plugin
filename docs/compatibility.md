@@ -15,9 +15,10 @@ Known integration layers:
 - Other Codez/Codex-compatible runtimes can execute the hook directly if they
   support plugin-loaded `PreToolUse` shell hooks.
 - Telegram or remote-worker gateways can sync the plugin to worker machines,
-  but no gateway is required for local usage. Teledex is the planned Telegram
-  gateway layer; its planned public repo name is `Krablante/teledex`, and it is
-  intentionally not linked until that repo exists.
+  but no gateway is required for local usage. [Teledex](https://github.com/Krablante/teledex)
+  is the Codez-first Telegram gateway layer; its full mode is optimized for
+  Codez App Server v2, while upstream `codex exec --json` is legacy
+  compatibility only.
 
 `rtk` command rewrite requires the `rtk` binary in `PATH`. Output guarding does
 not require `rtk`.

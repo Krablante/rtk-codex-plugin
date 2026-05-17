@@ -13,7 +13,7 @@ layer explicitly opts into it.
 | [Codez](https://github.com/Krablante/codez) | Codex-compatible runtime | App Server v2, goal RPC, long-session hardening, prompt pruning, and plugin hooks | Does not require Teledex |
 | [RTK Codex Plugin](https://github.com/Krablante/rtk-codex-plugin) | Optional Codex plugin | Shell/token safety through `rtk rewrite` and bounded output guarding | Requires a Codex-compatible plugin-hook runtime; does not require Teledex |
 | [Pitlane Codex Plugin](https://github.com/Krablante/pitlane-codex-plugin) | Optional Codex plugin | Code-navigation/token-saving rewrites through a host-local `pitlane` CLI | Requires a Codex-compatible plugin-hook runtime and local `pitlane`; does not require Teledex |
-| Teledex (planned public repo: `Krablante/teledex`) | Telegram gateway/session layer | Topics, queues, live steer, `/goal` UX, and multi-host delivery/recovery | Basic mode can drive upstream Codex; full mode requires a Codez-compatible runtime with App Server v2 and plugin-hook support |
+| [Teledex](https://github.com/Krablante/teledex) | Telegram gateway/session layer | Topics, queues, live steer, `/goal` UX, and delivery/recovery around durable agent sessions | Full mode is optimized for Codez App Server v2; upstream `codex exec --json` is legacy compatibility only |
 
 The plugin does not own sessions, chat delivery, host registries, or project
 metadata. It only handles shell command rewrite and bounded output at the hook
@@ -28,8 +28,9 @@ but it is not part of the Codez runtime itself.
 
 RTK does not require Codez, Pitlane, or Teledex. Codez is linked because it has
 a clean public release and is the recommended runtime when you want plugin
-hooks plus token-aware context behavior. Teledex is intentionally not linked
-until its public repo is ready.
+hooks plus token-aware context behavior. Teledex is linked as the Codez-first
+Telegram gateway layer; it can install or sync RTK for workers, but RTK remains
+usable without any gateway.
 
 ## Plugin Order
 
