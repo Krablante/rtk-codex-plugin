@@ -416,7 +416,7 @@ class RtkCodexHookTest(unittest.TestCase):
             "rg session_meta session.jsonl | head -n 5",
             "grep session_meta session.jsonl | tail -n 5",
             "sed -n '1,20p' session.jsonl | head -n 5",
-            "codex debug prompt-input | rg -m 3 atlas-data-inspection",
+            "codex debug prompt-input | rg -m 3 large-data-inspection",
         ]:
             with self.subTest(command=command):
                 result = self.run_hook(command)

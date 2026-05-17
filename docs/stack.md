@@ -27,7 +27,7 @@ CLI calls. Teledex is the Telegram/session gateway that can drive a runtime,
 but it is not part of the Codez runtime itself.
 
 RTK does not require Codez, Pitlane, or Teledex. Codez is linked because it has
-a clean public release and is the recommended runtime when you want plugin
+a clean public repository and is the recommended runtime when you want plugin
 hooks plus token-aware context behavior. Teledex is linked as the Codez-first
 Telegram gateway layer; it can install or sync RTK for workers, but RTK remains
 usable without any gateway.

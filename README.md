@@ -28,7 +28,7 @@
 </p>
 
 `rtk-codex-plugin` adds a shell-focused `PreToolUse` hook for Codex-compatible
-runtimes. It has two jobs:
+runtimes. It has three jobs:
 
 - route eligible Bash/`exec_command` calls through `rtk rewrite` for more
   compact output;
