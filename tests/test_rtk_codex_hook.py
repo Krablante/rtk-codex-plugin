@@ -31,14 +31,24 @@ LEGACY_WRAPPER_BYPASS_ENV = [
 ]
 
 
-def payload(command: str, *, tool_name: str = "Bash", input_key: str = "command") -> str:
-    return json.dumps(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": tool_name,
-            "tool_input": {input_key: command},
-        }
-    )
+def payload(
+    command: str,
+    *,
+    tool_name: str = "Bash",
+    input_key: str = "command",
+    cwd: Path | None = None,
+    workdir: Path | None = None,
+) -> str:
+    data = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool_name,
+        "tool_input": {input_key: command},
+    }
+    if cwd is not None:
+        data["cwd"] = str(cwd)
+    if workdir is not None:
+        data["tool_input"]["workdir"] = str(workdir)
+    return json.dumps(data)
 
 
 def post_payload(
@@ -69,6 +79,8 @@ class RtkCodexHookTest(unittest.TestCase):
         *,
         rtk_body: str | None = None,
         env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+        workdir: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -90,7 +102,7 @@ class RtkCodexHookTest(unittest.TestCase):
 
             return subprocess.run(
                 [str(HOOK)],
-                input=payload(command),
+                input=payload(command, cwd=cwd, workdir=workdir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -251,14 +263,19 @@ class RtkCodexHookTest(unittest.TestCase):
             "hexdump -C binary.bin",
             "xxd binary.bin",
             "cargo test",
+            "cargo check",
             "go test ./...",
             "pytest -q",
             "python -m pytest",
+            "bun test",
             "make test",
             "make check",
             "make build",
+            "make audit-public",
+            "make export-public",
             "npm run test",
             "npm run build",
+            "npm run lint",
             "pnpm check",
             "pnpm build",
             "yarn test",
@@ -319,6 +336,11 @@ class RtkCodexHookTest(unittest.TestCase):
             "journalctl -u teledex -n 50",
             "gh run view",
             "curl -I https://example.com",
+            "terraform plan",
+            "tofu plan",
+            "aws s3 ls",
+            "az account show",
+            "gcloud projects list",
             "ps aux",
             "ss -tulpn",
             "ip addr",
@@ -367,23 +389,136 @@ class RtkCodexHookTest(unittest.TestCase):
         self.assertEqual(self.rewritten_command(result), "rtk pwd")
 
     def test_passes_through_pitlane_owned_navigation_shapes(self) -> None:
-        for command in [
-            "cat src/app.py",
-            "cat hooks/rtk-codex-hook",
-            "head -n 20 src/app.py",
-            "head -n20 hooks/rtk-codex-hook",
-            "sed -n '1,20p' src/app.py",
-            "sed -n '1,20p' hooks/rtk-codex-hook",
-            "ls -R src",
-            "ls -laR hooks",
-            "tree src",
-        ]:
-            with self.subTest(command=command):
-                result = self.run_hook(
-                    command,
-                    rtk_body="#!/usr/bin/env sh\nshift\nprintf 'rtk %s\\n' \"$*\"\n",
-                )
-                self.assert_no_output(result)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("print('ok')\n", encoding="utf8")
+            (root / "hooks").mkdir()
+            hook = root / "hooks" / "rtk-codex-hook"
+            hook.write_text("#!/usr/bin/env python3\nprint('ok')\n", encoding="utf8")
+            hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            for command in [
+                "cat src/app.py",
+                "cat hooks/rtk-codex-hook",
+                "head -n 20 src/app.py",
+                "head -n20 hooks/rtk-codex-hook",
+                "sed -n '1,20p' src/app.py",
+                "sed -n '1,20p' hooks/rtk-codex-hook",
+                "ls -R src",
+                "ls -laR hooks",
+                "tree src",
+            ]:
+                with self.subTest(command=command):
+                    result = self.run_hook(
+                        command,
+                        cwd=root,
+                        rtk_body="#!/usr/bin/env sh\nshift\nprintf 'rtk %s\\n' \"$*\"\n",
+                    )
+                    self.assert_no_output(result)
+
+    def test_only_passes_through_pitlane_owned_source_pipelines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("print('ok')\n", encoding="utf8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+            pitlane_owned = [
+                "cat src/app.py | head",
+                "cat src/app.py | head -n 20",
+                "cat src/app.py | head -n20",
+                "nl -ba src/app.py | sed -n '1,2p'",
+            ]
+            unsupported = [
+                "cat src/app.py | sed -n p",
+                "cat src/app.py | tail -n 20",
+                "nl -ba src/app.py | sed -n p",
+            ]
+
+            for command in pitlane_owned:
+                with self.subTest(command=command):
+                    result = self.run_hook(command, cwd=root)
+                    self.assert_no_output(result)
+
+            for command in unsupported:
+                with self.subTest(command=command):
+                    result = self.run_hook(command, cwd=root)
+                    self.assertIn(str(OUTPUT_GUARD), self.rewritten_command(result))
+
+    def test_exec_command_workdir_resolves_pitlane_owned_source_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("root guidance\n", encoding="utf8")
+            plugin = root / "plugin"
+            (plugin / "src").mkdir(parents=True)
+            (plugin / "src" / "app.py").write_text(
+                "print('ok')\n",
+                encoding="utf8",
+            )
+            subprocess.run(["git", "init", "-q"], cwd=plugin, check=True)
+
+            result = self.run_hook(
+                "cat src/app.py | head -n 20",
+                workdir=plugin,
+            )
+
+        self.assert_no_output(result)
+
+    def test_does_not_treat_extensionless_external_paths_as_pitlane_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            external = Path(tmp) / "external-script"
+            external.write_text("#!/usr/bin/env python3\nprint('x' * 10000)\n", encoding="utf8")
+            external.chmod(external.stat().st_mode | stat.S_IXUSR)
+            external_py = Path(tmp) / "external.py"
+            external_py.write_text("print('x' * 10000)\n", encoding="utf8")
+            for command in [
+                "cat /var/log/syslog | head -n 5",
+                "head -n 5 /tmp/data",
+                "cat /tmp/config.yaml",
+                f"cat {external} | head -n 5",
+                f"cat {external_py} | head -n 5",
+            ]:
+                with self.subTest(command=command):
+                    result = self.run_hook(
+                        command,
+                        rtk_body="#!/usr/bin/env sh\nshift\nprintf 'rtk %s\\n' \"$*\"\n",
+                    )
+                    if "|" in command:
+                        self.assertIn(str(OUTPUT_GUARD), self.rewritten_command(result))
+                    else:
+                        self.assert_no_output(result)
+
+    def test_public_export_refuses_unsafe_output_paths(self) -> None:
+        exporter = PLUGIN_ROOT / "tools" / "export-public-projection.sh"
+        if not exporter.exists():
+            self.skipTest("private public-projection exporter is not included in the public projection")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = {
+                "plain": Path(tmp) / "not-public-dist",
+                "with-gitignore": Path(tmp) / "with-gitignore",
+                "allowed-suffix-with-gitignore": Path(tmp) / "public-dist" / "rtk-codex-plugin",
+            }
+            for unsafe in cases.values():
+                unsafe.mkdir(parents=True)
+                (unsafe / "keep.txt").write_text("keep\n", encoding="utf8")
+            for unsafe in cases["with-gitignore"], cases["allowed-suffix-with-gitignore"]:
+                (unsafe / ".gitignore").write_text("*\n", encoding="utf8")
+
+            for label, unsafe in cases.items():
+                with self.subTest(label=label):
+                    result = subprocess.run(
+                        [str(exporter), str(unsafe)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                        timeout=5,
+                    )
+
+                    self.assertEqual(result.returncode, 2)
+                    self.assertTrue((unsafe / "keep.txt").exists())
 
     def test_passes_through_env_prefixed_exact_output_commands(self) -> None:
         for command in [
@@ -1041,12 +1176,14 @@ class RtkCodexHookTest(unittest.TestCase):
                 timeout=5,
                 env=env,
             )
+            budget = json.loads((Path(tmp) / "session-1-turn-aggregate.json").read_text(encoding="utf8"))
 
         self.assertEqual(first.returncode, 0)
         self.assertEqual(first.stdout, "")
         self.assertEqual(second.returncode, 2)
         self.assertEqual(second.stdout, "")
         self.assertIn("turn aggregate visible output budget exceeded 2000 bytes", second.stderr)
+        self.assertEqual(budget["visible_bytes"], 1500 + len(second.stderr.encode("utf8")))
 
     def test_post_tool_use_honors_nonleading_bypass_assignment(self) -> None:
         result = subprocess.run(

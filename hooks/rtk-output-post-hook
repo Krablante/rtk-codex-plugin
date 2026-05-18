@@ -750,6 +750,20 @@ def reserve_turn_budget(payload: dict[str, Any], visible_bytes: int, aggregate_b
         return False
 
 
+def turn_budget_would_exceed(payload: dict[str, Any], visible_bytes: int, aggregate_budget: int) -> bool:
+    if aggregate_budget <= 0:
+        return False
+    session = safe_name(payload.get("session_id"), "session")
+    turn = safe_name(payload.get("turn_id"), "turn")
+    path = budget_root() / f"{session}-{turn}.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf8"))
+    except Exception:
+        state = {}
+    used = int(state.get("visible_bytes") or 0)
+    return used + visible_bytes > aggregate_budget
+
+
 def byte_excerpt(text: str, head_bytes: int, tail_bytes: int) -> tuple[str, int]:
     encoded = text.encode("utf8", errors="replace")
     if len(encoded) <= head_bytes + tail_bytes:
@@ -899,10 +913,11 @@ def main() -> int:
         reason = f"single tool output exceeded {single_cap} bytes"
     elif line_count > line_cap:
         reason = f"tool output exceeded {line_cap} visible lines"
-    elif reserve_turn_budget(payload, byte_count, aggregate_cap):
+    elif turn_budget_would_exceed(payload, byte_count, aggregate_cap):
         reason = f"turn aggregate visible output budget exceeded {aggregate_cap} bytes"
 
     if not reason:
+        reserve_turn_budget(payload, byte_count, aggregate_cap)
         return 0
 
     artifact_path, digest = write_artifact(payload, response)

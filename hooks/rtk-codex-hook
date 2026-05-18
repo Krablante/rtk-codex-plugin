@@ -23,6 +23,7 @@ BYPASS_ENV = {
 }
 
 TEST_COMMANDS = {
+    "bun",
     "cargo",
     "gradle",
     "gradlew",
@@ -40,6 +41,7 @@ TEST_COMMANDS = {
     "yarn",
 }
 BUILD_COMMANDS = {
+    "bun",
     "cargo",
     "gradle",
     "gradlew",
@@ -53,7 +55,10 @@ BUILD_COMMANDS = {
 }
 DOCKER_COMMANDS = {"docker", "docker-compose"}
 LIVE_CONTROL_COMMANDS = {
+    "aws",
+    "az",
     "curl",
+    "gcloud",
     "gh",
     "helm",
     "ip",
@@ -66,6 +71,8 @@ LIVE_CONTROL_COMMANDS = {
     "ss",
     "sudo",
     "systemctl",
+    "terraform",
+    "tofu",
 }
 WRAPPER_COMMANDS = {
     "chronic",
@@ -145,7 +152,7 @@ RISKY_LONG_LINE_EXTENSIONS = {
     ".log",
     ".log.*",
 }
-PIPELINE_TEXT_PRODUCERS = {"awk", "cat", "find", "git", "grep", "jq", "rg", "sed"}
+PIPELINE_TEXT_PRODUCERS = {"awk", "cat", "find", "git", "grep", "jq", "nl", "rg", "sed"}
 LINE_LIMITING_COMMANDS = {"head", "tail"}
 LONG_LINE_FILTER_COMMANDS = {"grep", "rg"}
 PITLANE_SOURCE_EXTS = {
@@ -172,6 +179,8 @@ PITLANE_SOURCE_EXTS = {
     ".kt",
     ".kts",
     ".lua",
+    ".md",
+    ".mdx",
     ".mjs",
     ".php",
     ".pl",
@@ -189,6 +198,8 @@ PITLANE_SOURCE_EXTS = {
     ".ts",
     ".tsx",
     ".vue",
+    ".yaml",
+    ".yml",
     ".zsh",
 }
 PITLANE_LISTING_FLAGS = {"-R", "-lR", "-laR", "-Ral", "-Rla"}
@@ -215,12 +226,13 @@ def main() -> int:
     if command_has_explicit_bypass(command):
         return 0
 
-    guarded = output_guard_rewrite(command)
+    cwd = cwd_from_payload(payload)
+    guarded = "" if is_pitlane_source_pipeline(command, cwd) else output_guard_rewrite(command)
     if guarded:
         emit_rewrite(guarded, command_field)
         return 0
 
-    if should_pass_through(command, cwd_from_payload(payload)):
+    if should_pass_through(command, cwd):
         return 0
 
     rtk = shutil.which("rtk")
@@ -282,6 +294,12 @@ def safe_unwrap_shell_command(command: str) -> str:
 
 
 def cwd_from_payload(payload: dict[str, Any]) -> Path:
+    tool_input = payload.get("tool_input")
+    if isinstance(tool_input, dict):
+        for key in ("workdir", "cwd"):
+            value = tool_input.get(key)
+            if isinstance(value, str) and value:
+                return Path(value)
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd:
         return Path(cwd)
@@ -341,6 +359,8 @@ def tokens_should_pass_through(tokens: list[str], cwd: Path) -> bool:
     if is_jq_command(tokens):
         return True
     if is_git_command(tokens):
+        return True
+    if is_absolute_outside_project_file_read(tokens, cwd):
         return True
     if is_git_exact_output(tokens):
         return True
@@ -403,8 +423,10 @@ def parse_sed_source_path(tokens: list[str]) -> str | None:
     return None
 
 
-def is_pitlane_source_path(path_arg: str, cwd: Path) -> bool:
+def is_pitlane_source_path(path_arg: str, cwd: Path, *, require_project_scope: bool = False) -> bool:
     if any(marker in path_arg for marker in {"*", "?", "["}):
+        return False
+    if require_project_scope and not path_resolves_inside_project(path_arg, cwd):
         return False
     suffix = Path(path_arg).suffix.lower()
     if suffix in PITLANE_SOURCE_EXTS:
@@ -412,6 +434,64 @@ def is_pitlane_source_path(path_arg: str, cwd: Path) -> bool:
     if suffix:
         return False
     return is_extensionless_shebang_source(path_arg, cwd)
+
+
+def git_root(start: Path) -> Path:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+        if result.returncode == 0:
+            root = Path(result.stdout.strip())
+            if root.is_absolute() and root.exists():
+                return root.resolve()
+    except Exception:
+        pass
+    try:
+        return start.resolve()
+    except OSError:
+        return start
+
+
+def path_resolves_inside_project(path_arg: str, cwd: Path) -> bool:
+    path = Path(path_arg)
+    if not path.is_absolute():
+        path = cwd / path
+    try:
+        resolved = path.resolve(strict=True)
+        project = git_root(cwd)
+        resolved.relative_to(project)
+        return True
+    except Exception:
+        return False
+
+
+def is_absolute_outside_project_file_read(tokens: list[str], cwd: Path) -> bool:
+    head = os.path.basename(tokens[0])
+    path_arg = ""
+    if head == "cat" and len(tokens) == 2:
+        path_arg = tokens[1]
+    elif head == "head":
+        path_arg = parse_head_source_path(tokens) or ""
+    elif head == "sed":
+        path_arg = parse_sed_source_path(tokens) or ""
+    if not path_arg:
+        return False
+    path = Path(path_arg)
+    if not path.is_absolute():
+        return False
+    try:
+        resolved = path.resolve()
+        project = git_root(cwd)
+        resolved.relative_to(project)
+        return False
+    except Exception:
+        return True
 
 
 def is_extensionless_shebang_source(path_arg: str, cwd: Path) -> bool:
@@ -629,6 +709,58 @@ def is_line_limited_pipeline(segments: list[str]) -> bool:
     first_head = os.path.basename(parsed[0][0])
     return first_head in PIPELINE_TEXT_PRODUCERS or any(
         token_has_risky_long_line_extension(token) for tokens in parsed for token in tokens
+    )
+
+
+def is_pitlane_source_pipeline(command: str, cwd: Path) -> bool:
+    segments = split_unquoted_pipes(command.strip())
+    if not segments or len(segments) != 2:
+        return False
+    parsed = parse_pipeline_segments(segments)
+    if not parsed or len(parsed) != 2:
+        return False
+    left, right = parsed
+    if (
+        len(left) == 2
+        and os.path.basename(left[0]) == "cat"
+        and is_pitlane_source_path(left[1], cwd, require_project_scope=True)
+    ):
+        return is_pitlane_head_filter(right)
+    if (
+        len(left) == 3
+        and os.path.basename(left[0]) == "nl"
+        and left[1] == "-ba"
+        and is_pitlane_source_path(left[2], cwd, require_project_scope=True)
+        and os.path.basename(right[0]) == "sed"
+        and is_pitlane_sed_filter_range(right)
+    ):
+        return True
+    return False
+
+
+def is_pitlane_head_filter(tokens: list[str]) -> bool:
+    return (
+        len(tokens) == 1
+        and os.path.basename(tokens[0]) == "head"
+    ) or (
+        len(tokens) == 3
+        and os.path.basename(tokens[0]) == "head"
+        and tokens[1] == "-n"
+        and tokens[2].isdigit()
+    ) or (
+        len(tokens) == 2
+        and os.path.basename(tokens[0]) == "head"
+        and tokens[1].startswith("-n")
+        and tokens[1][2:].isdigit()
+    )
+
+
+def is_pitlane_sed_filter_range(tokens: list[str]) -> bool:
+    return (
+        len(tokens) == 3
+        and os.path.basename(tokens[0]) == "sed"
+        and tokens[1] == "-n"
+        and bool(SED_SOURCE_RANGE_RE.match(tokens[2]))
     )
 
 
@@ -1110,15 +1242,15 @@ def is_build_command(tokens: list[str]) -> bool:
     if head not in BUILD_COMMANDS:
         return False
     if head in {"cargo", "go"}:
-        return bool(tail and tail[0] == "build")
+        return bool(tail and tail[0] in {"build", "check"})
     if head in {"gradle", "gradlew"}:
         return any(is_gradle_build_task(token) for token in tail)
     if head in {"mvn", "mvnw"}:
         return any(token in {"compile", "install", "package", "verify"} or token.endswith(":compile") for token in tail)
     if head == "make":
-        return any(token in {"build", "compile"} for token in tail)
-    if head in {"npm", "pnpm", "yarn"}:
-        return any(token == "build" for token in tail)
+        return any(token in {"audit", "audit-public", "build", "compile", "export-public", "lint"} for token in tail)
+    if head in {"bun", "npm", "pnpm", "yarn"}:
+        return any(token in {"build", "lint"} for token in tail)
     return False
 
 
@@ -1139,10 +1271,10 @@ def is_test_command(tokens: list[str]) -> bool:
         return any(is_gradle_test_task(token) for token in tail)
     if head in {"mvn", "mvnw"}:
         return any(token in {"check", "test", "verify"} or token.endswith(":test") for token in tail)
-    if head in {"npm", "pnpm", "yarn"}:
-        return any(token in {"test", "tests", "check", "ci"} for token in tail)
+    if head in {"bun", "npm", "pnpm", "yarn"}:
+        return any(token in {"test", "tests", "check", "ci", "lint"} for token in tail)
     if head == "make":
-        return any(token in {"test", "tests", "check", "ci"} for token in tail)
+        return any(token in {"test", "tests", "check", "ci", "lint", "audit", "audit-public", "export-public"} for token in tail)
     if head == "rake":
         return any("test" in token for token in tail)
     return False
